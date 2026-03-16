@@ -1,3 +1,9 @@
+CREATE TABLE indicate_qi.indicator_info (
+  concept_id  INTEGER NOT NULL,
+  title       varchar NOT NULL,
+  description varchar NOT NULL
+);
+
 CREATE TYPE indicate_qi.aggregation_kind AS ENUM('weekly', 'monthly', 'yearly');
 
 CREATE TABLE indicate_qi.aggregated_results (
