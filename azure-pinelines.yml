@@ -1,0 +1,72 @@
+trigger:
+- main
+
+variables:
+- group: DockerAppDeployment
+- name: tag
+  value: $(Build.BuildId)
+- name: dockerfilePath
+  value: '$(Build.SourcesDirectory)/database/Containerfile'
+
+stages:
+- stage: Build
+  displayName: Build and Push to ACR
+  jobs:
+  - job: Build
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - checkout: self
+    - task: Docker@2
+      displayName: Build and Push Image
+      inputs:
+        command: buildAndPush
+        tags: latest,$(tag)
+        repository: $(backendRepository)
+        containerRegistry: $(dockerRegistryServiceConnection)
+        Dockerfile: $(dockerfilePath)
+
+
+    - task: AzureCLI@2
+      inputs:
+        azureSubscription: $(azureSubscriptionConnection)
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          az acr login --name $(containerRegistry)
+          docker pull ghcr.io/umg-minai/indicate-data-exchange-server:latest
+          docker tag ghcr.io/umg-minai/indicate-data-exchange-server:latest $(containerRegistry)/$(frontendRepository):$(tag)
+          docker tag ghcr.io/umg-minai/indicate-data-exchange-server:latest $(containerRegistry)/$(frontendRepository):latest
+          docker push $(containerRegistry)/$(frontendRepository):$(tag)
+          docker push $(containerRegistry)/$(frontendRepository):latest
+
+
+- stage: Deploy
+  displayName: Deploy to Azure Container Apps
+  dependsOn: Build
+  jobs:
+  - job: Deploy
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - script: |
+        export POSTGRES_PASSWORD=$(openssl rand -base64 12)
+        echo "##vso[task.setvariable variable=POSTGRES_PASSWORD;isSecret=true]$POSTGRES_PASSWORD"
+      displayName: Generate random password
+    - task: AzureContainerApps@1
+      displayName: Deploy to Azure Container App
+      inputs:
+        azureSubscription: $(azureSubscriptionConnection)
+        imageToDeploy: $(containerRegistry)/$(frontendRepository):$(tag)
+        containerAppName: $(frontendContainerAppName)
+        resourceGroup: $(resourceGroup)
+        environmentVariables: 'DATABASE_USER=$(POSTGRES_USER) DATABASE_PASSWORD=$(POSTGRES_PASSWORD) DATABASE_HOST=$(DATABASE_HOST) DATABASE_PORT=$(DATABASE_PORT) DATABASE_NAME=$(DATABASE_NAME) DATABASE_SCHEMA=$(DATABASE_SCHEMA)'
+
+    - task: AzureContainerApps@1
+      displayName: Deploy to Azure Container App
+      inputs:
+        azureSubscription: $(azureSubscriptionConnection)
+        imageToDeploy: $(containerRegistry)/$(backendRepository):$(tag)
+        containerAppName: $(backendContainerAppName)
+        resourceGroup: $(resourceGroup)
+        environmentVariables: 'POSTGRES_USER=$(POSTGRES_USER) POSTGRES_PASSWORD=$(POSTGRES_PASSWORD) POSTGRES_DB=$(POSTGRES_DB)'
