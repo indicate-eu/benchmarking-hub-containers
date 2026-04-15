@@ -49,10 +49,6 @@ stages:
     pool:
       vmImage: 'ubuntu-latest'
     steps:
-    - script: |
-        export POSTGRES_PASSWORD=$(openssl rand -base64 12)
-        echo "##vso[task.setvariable variable=POSTGRES_PASSWORD;isSecret=true]$POSTGRES_PASSWORD"
-      displayName: Generate random password
     - task: AzureContainerApps@1
       displayName: Deploy to Azure Container App
       inputs:
