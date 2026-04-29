@@ -39,30 +39,89 @@ stages:
           docker tag ghcr.io/indicate-eu/benchmarking-data-exchange-server:latest $(containerRegistry)/$(frontendRepository):latest
           docker push $(containerRegistry)/$(frontendRepository):$(tag)
           docker push $(containerRegistry)/$(frontendRepository):latest
+          
+    - task: Docker@2
+      displayName: Build and Push Image
+      inputs:
+        command: buildAndPush
+        tags: latest,$(tag)
+        repository: $(backendRepository)
+        containerRegistry: $(dockerRegistryServiceConnectionProd)
+        Dockerfile: $(dockerfilePath)
 
 
-- stage: Deploy
+    - task: AzureCLI@2
+      inputs:
+        azureSubscription: $(azureSubscriptionConnectionProd)
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          az acr login --name $(containerRegistryProd)
+          docker pull ghcr.io/indicate-eu/benchmarking-data-exchange-server:latest
+          docker tag ghcr.io/indicate-eu/benchmarking-data-exchange-server:latest $(containerRegistryProd)/$(frontendRepository):$(tag)
+          docker tag ghcr.io/indicate-eu/benchmarking-data-exchange-server:latest $(containerRegistryProd)/$(frontendRepository):latest
+          docker push $(containerRegistryProd)/$(frontendRepository):$(tag)
+          docker push $(containerRegistryProd)/$(frontendRepository):latest
+
+
+- stage: Deploy_nonprod
   displayName: Deploy to Azure Container Apps
   dependsOn: Build
   jobs:
-  - job: Deploy
+  - deployment: Deploy_nonprod
+    displayName: Deploy to Azure Container Apps Non Prod
+    environment: benchmarking-nonprod
     pool:
       vmImage: 'ubuntu-latest'
-    steps:
-    - task: AzureContainerApps@1
-      displayName: Deploy to Azure Container App
-      inputs:
-        azureSubscription: $(azureSubscriptionConnection)
-        imageToDeploy: $(containerRegistry)/$(frontendRepository):$(tag)
-        containerAppName: $(frontendContainerAppName)
-        resourceGroup: $(resourceGroup)
-        environmentVariables: 'DATABASE_USER=$(POSTGRES_USER) DATABASE_PASSWORD=$(POSTGRES_PASSWORD) DATABASE_HOST=$(DATABASE_HOST) DATABASE_PORT=$(DATABASE_PORT) DATABASE_NAME=$(DATABASE_NAME) DATABASE_SCHEMA=$(DATABASE_SCHEMA)'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: AzureContainerApps@1
+            displayName: Deploy to Azure Container App
+            inputs:
+              azureSubscription: $(azureSubscriptionConnection)
+              imageToDeploy: $(containerRegistry)/$(frontendRepository):$(tag)
+              containerAppName: $(frontendContainerAppName)
+              resourceGroup: $(resourceGroup)
+              environmentVariables: 'DATABASE_USER=$(POSTGRES_USER) DATABASE_PASSWORD=$(POSTGRES_PASSWORD) DATABASE_HOST=$(DATABASE_HOST) DATABASE_PORT=$(DATABASE_PORT) DATABASE_NAME=$(DATABASE_NAME) DATABASE_SCHEMA=$(DATABASE_SCHEMA)'
 
-    - task: AzureContainerApps@1
-      displayName: Deploy to Azure Container App
-      inputs:
-        azureSubscription: $(azureSubscriptionConnection)
-        imageToDeploy: $(containerRegistry)/$(backendRepository):$(tag)
-        containerAppName: $(backendContainerAppName)
-        resourceGroup: $(resourceGroup)
-        environmentVariables: 'POSTGRES_USER=$(POSTGRES_USER) POSTGRES_PASSWORD=$(POSTGRES_PASSWORD) POSTGRES_DB=$(POSTGRES_DB) PGDATA=$(PGDATA)'
+          - task: AzureContainerApps@1
+            displayName: Deploy to Azure Container App
+            inputs:
+              azureSubscription: $(azureSubscriptionConnection)
+              imageToDeploy: $(containerRegistry)/$(backendRepository):$(tag)
+              containerAppName: $(backendContainerAppName)
+              resourceGroup: $(resourceGroup)
+              environmentVariables: 'POSTGRES_USER=$(POSTGRES_USER) POSTGRES_PASSWORD=$(POSTGRES_PASSWORD) POSTGRES_DB=$(POSTGRES_DB) PGDATA=$(PGDATA)'
+
+- stage: Deploy_prod
+  displayName: Deploy to Azure Container Apps
+  dependsOn: Deploy_nonprod
+  jobs:
+  - deployment: Deploy_prod
+    displayName: Deploy to Azure Container Apps Prod
+    environment: benchmarking-prod
+    pool:
+      vmImage: 'ubuntu-latest'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: AzureContainerApps@1
+            displayName: Deploy to Azure Container App
+            inputs:
+              azureSubscription: $(azureSubscriptionConnectionProd)
+              imageToDeploy: $(containerRegistryProd)/$(frontendRepository):$(tag)
+              containerAppName: $(frontendContainerAppName)
+              resourceGroup: $(resourceGroup)
+              environmentVariables: 'DATABASE_USER=$(POSTGRES_USER) DATABASE_PASSWORD=$(POSTGRES_PASSWORD) DATABASE_HOST=$(DATABASE_HOST) DATABASE_PORT=$(DATABASE_PORT) DATABASE_NAME=$(DATABASE_NAME) DATABASE_SCHEMA=$(DATABASE_SCHEMA)'
+
+          - task: AzureContainerApps@1
+            displayName: Deploy to Azure Container App
+            inputs:
+              azureSubscription: $(azureSubscriptionConnectionProd)
+              imageToDeploy: $(containerRegistryProd)/$(backendRepository):$(tag)
+              containerAppName: $(backendContainerAppName)
+              resourceGroup: $(resourceGroup)
+              environmentVariables: 'POSTGRES_USER=$(POSTGRES_USER) POSTGRES_PASSWORD=$(POSTGRES_PASSWORD) POSTGRES_DB=$(POSTGRES_DB) PGDATA=$(PGDATA)'
