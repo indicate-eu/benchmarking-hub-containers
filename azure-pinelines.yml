@@ -13,23 +13,9 @@ stages:
   displayName: Build and Push to ACR
   jobs:
   - job: Build
-    pool:
-      vmImage: 'ubuntu-latest'
+    pool: CICD-Agent
     steps:
     - checkout: self
-    
-    - task: AzureCLI@2
-      displayName: Install Defender CLI
-      inputs:
-        azureSubscription: $(azureSubscriptionConnection)
-        scriptType: bash
-        scriptLocation: inlineScript
-        inlineScript: |
-          echo "Downloading Defender CLI..."
-          curl -fL https://aka.ms/defender-cli_linux-x64 -o defender
-          chmod +x defender
-          sudo mv defender /usr/local/bin/defender
-          defender --version
 
     - task: Docker@2
       displayName: Build DB Image
@@ -88,12 +74,8 @@ stages:
         scriptLocation: inlineScript
         inlineScript: |
           az acr login --name $(containerRegistry)
-          docker pull ghcr.io/indicate-eu/benchmarking-data-exchange-server:latest
-          docker tag ghcr.io/indicate-eu/benchmarking-data-exchange-server:latest $(containerRegistry)/$(frontendRepository):$(tag)
-          docker tag ghcr.io/indicate-eu/benchmarking-data-exchange-server:latest $(containerRegistry)/$(frontendRepository):latest
-
           for i in 1 2 3; do
-            defender scan image $(containerRegistry)/$(frontendRepository):$(tag) \
+            defender scan image ghcr.io/indicate-eu/benchmarking-data-exchange-server:latest \
               --defender-output $(Build.ArtifactStagingDirectory)/$(frontendRepository).sarif \
               --defender-break
             rc=$?
@@ -108,9 +90,8 @@ stages:
               exit $rc
             fi
           done
-
-          docker push $(containerRegistry)/$(frontendRepository):$(tag)
-          docker push $(containerRegistry)/$(frontendRepository):latest
+          skopeo copy --override-os linux --override-arch amd64 docker://ghcr.io/indicate-eu/benchmarking-data-exchange-server:latest docker://$(containerRegistry)/$(frontendRepository):latest
+          skopeo copy --override-os linux --override-arch amd64 docker://ghcr.io/indicate-eu/benchmarking-data-exchange-server:latest docker://$(containerRegistry)/$(frontendRepository):$(tag)
       env:
         DEFENDER_TENANT_ID: $(DEFENDER_TENANT_ID)
         DEFENDER_CLIENT_ID: $(DEFENDER_CLIENT_ID)
@@ -120,7 +101,7 @@ stages:
       inputs:
         PathtoPublish: $(Build.ArtifactStagingDirectory)
         ArtifactName: image-vulnerability-scans
-          
+
     - task: Docker@2
       displayName: Build and Push Image
       inputs:
@@ -129,7 +110,8 @@ stages:
         repository: $(backendRepository)
         containerRegistry: $(dockerRegistryServiceConnectionProd)
         Dockerfile: $(dockerfilePath)
-        
+
+
     - task: AzureCLI@2
       inputs:
         azureSubscription: $(azureSubscriptionConnectionProd)
@@ -137,11 +119,9 @@ stages:
         scriptLocation: inlineScript
         inlineScript: |
           az acr login --name $(containerRegistryProd)
-          docker pull ghcr.io/indicate-eu/benchmarking-data-exchange-server:latest
-          docker tag ghcr.io/indicate-eu/benchmarking-data-exchange-server:latest $(containerRegistryProd)/$(frontendRepository):$(tag)
-          docker tag ghcr.io/indicate-eu/benchmarking-data-exchange-server:latest $(containerRegistryProd)/$(frontendRepository):latest
-          docker push $(containerRegistryProd)/$(frontendRepository):$(tag)
-          docker push $(containerRegistryProd)/$(frontendRepository):latest
+          skopeo copy --override-os linux --override-arch amd64 docker://ghcr.io/indicate-eu/benchmarking-data-exchange-server:latest docker://$(containerRegistryProd)/$(frontendRepository):latest
+          skopeo copy --override-os linux --override-arch amd64 docker://ghcr.io/indicate-eu/benchmarking-data-exchange-server:latest docker://$(containerRegistryProd)/$(frontendRepository):$(tag)
+
 
 - stage: Deploy_nonprod
   displayName: Deploy to Azure Container Apps
@@ -150,8 +130,7 @@ stages:
   - deployment: Deploy_nonprod
     displayName: Deploy to Azure Container Apps Non Prod
     environment: benchmarking-nonprod
-    pool:
-      vmImage: 'ubuntu-latest'
+    pool: CICD-Agent
     strategy:
       runOnce:
         deploy:
@@ -181,8 +160,7 @@ stages:
   - deployment: Deploy_prod
     displayName: Deploy to Azure Container Apps Prod
     environment: benchmarking-prod
-    pool:
-      vmImage: 'ubuntu-latest'
+    pool: CICD-Agent
     strategy:
       runOnce:
         deploy:
