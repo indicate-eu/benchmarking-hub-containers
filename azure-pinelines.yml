@@ -98,6 +98,7 @@ stages:
         DEFENDER_CLIENT_SECRET: $(DEFENDER_CLIENT_SECRET)
     
     - task: PublishBuildArtifacts@1
+      condition: always()
       inputs:
         PathtoPublish: $(Build.ArtifactStagingDirectory)
         ArtifactName: image-vulnerability-scans
