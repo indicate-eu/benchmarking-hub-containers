@@ -191,6 +191,14 @@ stages:
                   -o tsv)
                 IFS=$'\t' read -r MODE HAS_BLUE HAS_GREEN CUR_REV <<< "$SNAP"
 
+                # Normalize values (Windows-hosted agents can introduce CRLF in tsv output)
+                MODE=$(printf '%s' "${MODE:-}" | tr -d '\r')
+                HAS_BLUE=$(printf '%s' "${HAS_BLUE:-0}" | tr -d '\r')
+                HAS_GREEN=$(printf '%s' "${HAS_GREEN:-0}" | tr -d '\r')
+                CUR_REV=$(printf '%s' "${CUR_REV:-}" | tr -d '\r')
+                [[ "$HAS_BLUE" =~ ^[0-9]+$ ]] || HAS_BLUE=0
+                [[ "$HAS_GREEN" =~ ^[0-9]+$ ]] || HAS_GREEN=0
+
                 # Ensure the app is in multiple-revision mode (required for labels).
                 if [ "$(printf '%s' "$MODE" | tr '[:upper:]' '[:lower:]')" != "multiple" ]; then
                   az containerapp revision set-mode \
@@ -211,9 +219,15 @@ stages:
                     --name "$APP" --resource-group "$RG" --label blue --revision "$CUR_REV" >/dev/null
                 fi
 
-                # Re-assert weights, but only reference labels that are actually
-                # assigned, otherwise the command fails on the unassigned one.
-                if [ "$HAS_GREEN" = "0" ]; then
+                # Re-read current label bindings right before traffic set to avoid
+                # decisions based on stale snapshot values.
+                CUR_BLUE_LABEL=$(az containerapp show --name "$APP" --resource-group "$RG" \
+                  --query "properties.configuration.ingress.traffic[?label=='blue'].revisionName | [0]" -o tsv | tr -d '\r')
+                CUR_GREEN_LABEL=$(az containerapp show --name "$APP" --resource-group "$RG" \
+                  --query "properties.configuration.ingress.traffic[?label=='green'].revisionName | [0]" -o tsv | tr -d '\r')
+
+                # Re-assert weights, but only reference labels that are actually assigned.
+                if [ -z "$CUR_GREEN_LABEL" ] || [ "$CUR_GREEN_LABEL" = "null" ]; then
                   az containerapp ingress traffic set \
                     --name "$APP" --resource-group "$RG" --label-weight blue=100 >/dev/null
                 else
@@ -271,6 +285,14 @@ stages:
                   -o tsv)
                 IFS=$'\t' read -r MODE HAS_BLUE HAS_GREEN CUR_REV <<< "$SNAP"
 
+                # Normalize values (Windows-hosted agents can introduce CRLF in tsv output)
+                MODE=$(printf '%s' "${MODE:-}" | tr -d '\r')
+                HAS_BLUE=$(printf '%s' "${HAS_BLUE:-0}" | tr -d '\r')
+                HAS_GREEN=$(printf '%s' "${HAS_GREEN:-0}" | tr -d '\r')
+                CUR_REV=$(printf '%s' "${CUR_REV:-}" | tr -d '\r')
+                [[ "$HAS_BLUE" =~ ^[0-9]+$ ]] || HAS_BLUE=0
+                [[ "$HAS_GREEN" =~ ^[0-9]+$ ]] || HAS_GREEN=0
+
                 if [ "$(printf '%s' "$MODE" | tr '[:upper:]' '[:lower:]')" != "multiple" ]; then
                   az containerapp revision set-mode \
                     --name "$APP" --resource-group "$RG" --mode multiple >/dev/null
@@ -285,7 +307,12 @@ stages:
                     --name "$APP" --resource-group "$RG" --label blue --revision "$CUR_REV" >/dev/null
                 fi
 
-                if [ "$HAS_GREEN" = "0" ]; then
+                CUR_BLUE_LABEL=$(az containerapp show --name "$APP" --resource-group "$RG" \
+                  --query "properties.configuration.ingress.traffic[?label=='blue'].revisionName | [0]" -o tsv | tr -d '\r')
+                CUR_GREEN_LABEL=$(az containerapp show --name "$APP" --resource-group "$RG" \
+                  --query "properties.configuration.ingress.traffic[?label=='green'].revisionName | [0]" -o tsv | tr -d '\r')
+
+                if [ -z "$CUR_GREEN_LABEL" ] || [ "$CUR_GREEN_LABEL" = "null" ]; then
                   az containerapp ingress traffic set \
                     --name "$APP" --resource-group "$RG" --label-weight blue=100 >/dev/null
                 else
