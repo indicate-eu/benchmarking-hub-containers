@@ -219,7 +219,7 @@ stages:
                     echo "[$APP] no ready revision yet - entering first-deploy bootstrap"
                   else
                     az containerapp revision label add \
-                      --name "$APP" --resource-group "$RG" --label blue --revision "$CUR_REV" >/dev/null
+                      --name "$APP" --resource-group "$RG" --label blue --revision "$CUR_REV" --yes >/dev/null
                   fi
                 fi
 
@@ -262,16 +262,16 @@ stages:
 
                 if [ "$FIRST_DEPLOY" = true ]; then
                   az containerapp revision label add \
-                    --name "$APP" --resource-group "$RG" --label blue --revision "$NEW_REV" >/dev/null
+                    --name "$APP" --resource-group "$RG" --label blue --revision "$NEW_REV" --yes >/dev/null
                   az containerapp ingress traffic set \
                     --name "$APP" --resource-group "$RG" --label-weight blue=100 >/dev/null
                 else
                   # Move green label to the new revision.
                   az containerapp revision label remove \
-                    --name "$APP" --resource-group "$RG" --label green || true
+                    --name "$APP" --resource-group "$RG" --label green --yes || true
                   az containerapp revision label add \
                     --name "$APP" --resource-group "$RG" \
-                    --label green --revision "$NEW_REV"
+                    --label green --revision "$NEW_REV" --yes
 
                   # Deactivate the revision that just lost the green label,
                   # unless it was the live (blue) one or the new one.
