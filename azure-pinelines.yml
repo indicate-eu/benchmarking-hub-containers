@@ -281,97 +281,6 @@ stages:
                   fi
                 fi
 
-          - task: AzureCLI@2
-            displayName: Deploy Backend (DB) to green slot
-            inputs:
-              azureSubscription: $(azureSubscriptionConnectionProd)
-              scriptType: bash
-              scriptLocation: inlineScript
-              inlineScript: |
-                set -euo pipefail
-                APP="$(backendContainerAppName)"
-                RG="$(resourceGroup)"
-                SUFFIX="b$(Build.BuildId)"
-
-                SNAP=$(az containerapp show --name "$APP" --resource-group "$RG" \
-                  --query "[properties.configuration.activeRevisionsMode, length(properties.configuration.ingress.traffic[?label=='blue']), length(properties.configuration.ingress.traffic[?label=='green']), properties.latestReadyRevisionName]" \
-                  -o tsv)
-                IFS=$'\t' read -r MODE HAS_BLUE HAS_GREEN CUR_REV <<< "$SNAP"
-
-                # Normalize values (Windows-hosted agents can introduce CRLF in tsv output)
-                MODE=$(printf '%s' "${MODE:-}" | tr -d '\r')
-                HAS_BLUE=$(printf '%s' "${HAS_BLUE:-0}" | tr -d '\r')
-                HAS_GREEN=$(printf '%s' "${HAS_GREEN:-0}" | tr -d '\r')
-                CUR_REV=$(printf '%s' "${CUR_REV:-}" | tr -d '\r')
-                [[ "$HAS_BLUE" =~ ^[0-9]+$ ]] || HAS_BLUE=0
-                [[ "$HAS_GREEN" =~ ^[0-9]+$ ]] || HAS_GREEN=0
-                FIRST_DEPLOY=false
-
-                if [ "$(printf '%s' "$MODE" | tr '[:upper:]' '[:lower:]')" != "multiple" ]; then
-                  az containerapp revision set-mode \
-                    --name "$APP" --resource-group "$RG" --mode multiple >/dev/null
-                fi
-
-                if [ "$HAS_BLUE" = "0" ]; then
-                  if [ -z "$CUR_REV" ] || [ "$CUR_REV" = "null" ]; then
-                    FIRST_DEPLOY=true
-                    echo "[$APP] no ready revision yet - entering first-deploy bootstrap"
-                  else
-                    az containerapp revision label add \
-                      --name "$APP" --resource-group "$RG" --label blue --revision "$CUR_REV" >/dev/null
-                  fi
-                fi
-
-                if [ "$FIRST_DEPLOY" = false ]; then
-                  CUR_BLUE_LABEL=$(az containerapp show --name "$APP" --resource-group "$RG" \
-                    --query "properties.configuration.ingress.traffic[?label=='blue'].revisionName | [0]" -o tsv | tr -d '\r')
-                  CUR_GREEN_LABEL=$(az containerapp show --name "$APP" --resource-group "$RG" \
-                    --query "properties.configuration.ingress.traffic[?label=='green'].revisionName | [0]" -o tsv | tr -d '\r')
-
-                  if [ -z "$CUR_GREEN_LABEL" ] || [ "$CUR_GREEN_LABEL" = "null" ]; then
-                    az containerapp ingress traffic set \
-                      --name "$APP" --resource-group "$RG" --label-weight blue=100 >/dev/null
-                  else
-                    az containerapp ingress traffic set \
-                      --name "$APP" --resource-group "$RG" --label-weight blue=100 green=0 >/dev/null
-                  fi
-                fi
-
-                PREV_BLUE=$(az containerapp show --name "$APP" --resource-group "$RG" \
-                  --query "properties.configuration.ingress.traffic[?label=='blue'].revisionName | [0]" -o tsv)
-                PREV_GREEN=$(az containerapp show --name "$APP" --resource-group "$RG" \
-                  --query "properties.configuration.ingress.traffic[?label=='green'].revisionName | [0]" -o tsv)
-
-                az containerapp update \
-                  --name "$APP" --resource-group "$RG" \
-                  --image "$(containerRegistryProd)/$(backendRepository):$(tag)" \
-                  --revision-suffix "$SUFFIX" \
-                  --replace-env-vars \
-                    "POSTGRES_USER=$(POSTGRES_USER)" \
-                    "POSTGRES_PASSWORD=$(POSTGRES_PASSWORD)" \
-                    "POSTGRES_DB=$(POSTGRES_DB)" \
-                    "PGDATA=$(PGDATA)"
-
-                NEW_REV="${APP}--${SUFFIX}"
-
-                if [ "$FIRST_DEPLOY" = true ]; then
-                  az containerapp revision label add \
-                    --name "$APP" --resource-group "$RG" --label blue --revision "$NEW_REV" >/dev/null
-                  az containerapp ingress traffic set \
-                    --name "$APP" --resource-group "$RG" --label-weight blue=100 >/dev/null
-                else
-                  az containerapp revision label remove \
-                    --name "$APP" --resource-group "$RG" --label green || true
-                  az containerapp revision label add \
-                    --name "$APP" --resource-group "$RG" \
-                    --label green --revision "$NEW_REV"
-
-                  if [ -n "$PREV_GREEN" ] && [ "$PREV_GREEN" != "$PREV_BLUE" ] && [ "$PREV_GREEN" != "$NEW_REV" ]; then
-                    az containerapp revision deactivate \
-                      --name "$APP" --resource-group "$RG" --revision "$PREV_GREEN"
-                  fi
-                fi
-
 - stage: Promote_prod
   displayName: Promote green to live (manual approval)
   dependsOn: Deploy_prod
@@ -386,7 +295,7 @@ stages:
         deploy:
           steps:
           - task: AzureCLI@2
-            displayName: Swap labels (frontend + backend)
+            displayName: Swap labels (frontend only)
             inputs:
               azureSubscription: $(azureSubscriptionConnectionProd)
               scriptType: bash
@@ -397,11 +306,9 @@ stages:
                 # `revision label swap` only renames the labels; it does not
                 # change traffic weights. We must follow with `ingress traffic
                 # set` to actually flip 100% traffic onto the new blue.
-                for app in "$(frontendContainerAppName)" "$(backendContainerAppName)"; do
-                  az containerapp revision label swap \
-                    --name "$app" --resource-group "$(resourceGroup)" \
-                    --source green --target blue
-                  az containerapp ingress traffic set \
-                    --name "$app" --resource-group "$(resourceGroup)" \
-                    --label-weight blue=100 green=0
-                done
+                az containerapp revision label swap \
+                  --name "$(frontendContainerAppName)" --resource-group "$(resourceGroup)" \
+                  --source green --target blue
+                az containerapp ingress traffic set \
+                  --name "$(frontendContainerAppName)" --resource-group "$(resourceGroup)" \
+                  --label-weight blue=100 green=0
