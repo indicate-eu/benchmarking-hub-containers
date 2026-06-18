@@ -198,6 +198,7 @@ stages:
                 CUR_REV=$(printf '%s' "${CUR_REV:-}" | tr -d '\r')
                 [[ "$HAS_BLUE" =~ ^[0-9]+$ ]] || HAS_BLUE=0
                 [[ "$HAS_GREEN" =~ ^[0-9]+$ ]] || HAS_GREEN=0
+                FIRST_DEPLOY=false
 
                 # Ensure the app is in multiple-revision mode (required for labels).
                 if [ "$(printf '%s' "$MODE" | tr '[:upper:]' '[:lower:]')" != "multiple" ]; then
@@ -212,27 +213,32 @@ stages:
                 # the new revision created below. No-op once both labels already exist.
                 if [ "$HAS_BLUE" = "0" ]; then
                   if [ -z "$CUR_REV" ] || [ "$CUR_REV" = "null" ]; then
-                    echo "ERROR: $APP has no ready revision to seed the 'blue' label on." >&2
-                    exit 1
+                    # Truly cold app: no ready revision exists yet. We'll create one with
+                    # `az containerapp update` below and seed `blue` on that revision.
+                    FIRST_DEPLOY=true
+                    echo "[$APP] no ready revision yet - entering first-deploy bootstrap"
+                  else
+                    az containerapp revision label add \
+                      --name "$APP" --resource-group "$RG" --label blue --revision "$CUR_REV" >/dev/null
                   fi
-                  az containerapp revision label add \
-                    --name "$APP" --resource-group "$RG" --label blue --revision "$CUR_REV" >/dev/null
                 fi
 
                 # Re-read current label bindings right before traffic set to avoid
                 # decisions based on stale snapshot values.
-                CUR_BLUE_LABEL=$(az containerapp show --name "$APP" --resource-group "$RG" \
-                  --query "properties.configuration.ingress.traffic[?label=='blue'].revisionName | [0]" -o tsv | tr -d '\r')
-                CUR_GREEN_LABEL=$(az containerapp show --name "$APP" --resource-group "$RG" \
-                  --query "properties.configuration.ingress.traffic[?label=='green'].revisionName | [0]" -o tsv | tr -d '\r')
+                if [ "$FIRST_DEPLOY" = false ]; then
+                  CUR_BLUE_LABEL=$(az containerapp show --name "$APP" --resource-group "$RG" \
+                    --query "properties.configuration.ingress.traffic[?label=='blue'].revisionName | [0]" -o tsv | tr -d '\r')
+                  CUR_GREEN_LABEL=$(az containerapp show --name "$APP" --resource-group "$RG" \
+                    --query "properties.configuration.ingress.traffic[?label=='green'].revisionName | [0]" -o tsv | tr -d '\r')
 
-                # Re-assert weights, but only reference labels that are actually assigned.
-                if [ -z "$CUR_GREEN_LABEL" ] || [ "$CUR_GREEN_LABEL" = "null" ]; then
-                  az containerapp ingress traffic set \
-                    --name "$APP" --resource-group "$RG" --label-weight blue=100 >/dev/null
-                else
-                  az containerapp ingress traffic set \
-                    --name "$APP" --resource-group "$RG" --label-weight blue=100 green=0 >/dev/null
+                  # Re-assert weights, but only reference labels that are actually assigned.
+                  if [ -z "$CUR_GREEN_LABEL" ] || [ "$CUR_GREEN_LABEL" = "null" ]; then
+                    az containerapp ingress traffic set \
+                      --name "$APP" --resource-group "$RG" --label-weight blue=100 >/dev/null
+                  else
+                    az containerapp ingress traffic set \
+                      --name "$APP" --resource-group "$RG" --label-weight blue=100 green=0 >/dev/null
+                  fi
                 fi
 
                 PREV_BLUE=$(az containerapp show --name "$APP" --resource-group "$RG" \
@@ -254,18 +260,25 @@ stages:
 
                 NEW_REV="${APP}--${SUFFIX}"
 
-                # Move green label to the new revision.
-                az containerapp revision label remove \
-                  --name "$APP" --resource-group "$RG" --label green || true
-                az containerapp revision label add \
-                  --name "$APP" --resource-group "$RG" \
-                  --label green --revision "$NEW_REV"
+                if [ "$FIRST_DEPLOY" = true ]; then
+                  az containerapp revision label add \
+                    --name "$APP" --resource-group "$RG" --label blue --revision "$NEW_REV" >/dev/null
+                  az containerapp ingress traffic set \
+                    --name "$APP" --resource-group "$RG" --label-weight blue=100 >/dev/null
+                else
+                  # Move green label to the new revision.
+                  az containerapp revision label remove \
+                    --name "$APP" --resource-group "$RG" --label green || true
+                  az containerapp revision label add \
+                    --name "$APP" --resource-group "$RG" \
+                    --label green --revision "$NEW_REV"
 
-                # Deactivate the revision that just lost the green label,
-                # unless it was the live (blue) one or the new one.
-                if [ -n "$PREV_GREEN" ] && [ "$PREV_GREEN" != "$PREV_BLUE" ] && [ "$PREV_GREEN" != "$NEW_REV" ]; then
-                  az containerapp revision deactivate \
-                    --name "$APP" --resource-group "$RG" --revision "$PREV_GREEN"
+                  # Deactivate the revision that just lost the green label,
+                  # unless it was the live (blue) one or the new one.
+                  if [ -n "$PREV_GREEN" ] && [ "$PREV_GREEN" != "$PREV_BLUE" ] && [ "$PREV_GREEN" != "$NEW_REV" ]; then
+                    az containerapp revision deactivate \
+                      --name "$APP" --resource-group "$RG" --revision "$PREV_GREEN"
+                  fi
                 fi
 
           - task: AzureCLI@2
@@ -292,6 +305,7 @@ stages:
                 CUR_REV=$(printf '%s' "${CUR_REV:-}" | tr -d '\r')
                 [[ "$HAS_BLUE" =~ ^[0-9]+$ ]] || HAS_BLUE=0
                 [[ "$HAS_GREEN" =~ ^[0-9]+$ ]] || HAS_GREEN=0
+                FIRST_DEPLOY=false
 
                 if [ "$(printf '%s' "$MODE" | tr '[:upper:]' '[:lower:]')" != "multiple" ]; then
                   az containerapp revision set-mode \
@@ -300,24 +314,27 @@ stages:
 
                 if [ "$HAS_BLUE" = "0" ]; then
                   if [ -z "$CUR_REV" ] || [ "$CUR_REV" = "null" ]; then
-                    echo "ERROR: $APP has no ready revision to seed the 'blue' label on." >&2
-                    exit 1
+                    FIRST_DEPLOY=true
+                    echo "[$APP] no ready revision yet - entering first-deploy bootstrap"
+                  else
+                    az containerapp revision label add \
+                      --name "$APP" --resource-group "$RG" --label blue --revision "$CUR_REV" >/dev/null
                   fi
-                  az containerapp revision label add \
-                    --name "$APP" --resource-group "$RG" --label blue --revision "$CUR_REV" >/dev/null
                 fi
 
-                CUR_BLUE_LABEL=$(az containerapp show --name "$APP" --resource-group "$RG" \
-                  --query "properties.configuration.ingress.traffic[?label=='blue'].revisionName | [0]" -o tsv | tr -d '\r')
-                CUR_GREEN_LABEL=$(az containerapp show --name "$APP" --resource-group "$RG" \
-                  --query "properties.configuration.ingress.traffic[?label=='green'].revisionName | [0]" -o tsv | tr -d '\r')
+                if [ "$FIRST_DEPLOY" = false ]; then
+                  CUR_BLUE_LABEL=$(az containerapp show --name "$APP" --resource-group "$RG" \
+                    --query "properties.configuration.ingress.traffic[?label=='blue'].revisionName | [0]" -o tsv | tr -d '\r')
+                  CUR_GREEN_LABEL=$(az containerapp show --name "$APP" --resource-group "$RG" \
+                    --query "properties.configuration.ingress.traffic[?label=='green'].revisionName | [0]" -o tsv | tr -d '\r')
 
-                if [ -z "$CUR_GREEN_LABEL" ] || [ "$CUR_GREEN_LABEL" = "null" ]; then
-                  az containerapp ingress traffic set \
-                    --name "$APP" --resource-group "$RG" --label-weight blue=100 >/dev/null
-                else
-                  az containerapp ingress traffic set \
-                    --name "$APP" --resource-group "$RG" --label-weight blue=100 green=0 >/dev/null
+                  if [ -z "$CUR_GREEN_LABEL" ] || [ "$CUR_GREEN_LABEL" = "null" ]; then
+                    az containerapp ingress traffic set \
+                      --name "$APP" --resource-group "$RG" --label-weight blue=100 >/dev/null
+                  else
+                    az containerapp ingress traffic set \
+                      --name "$APP" --resource-group "$RG" --label-weight blue=100 green=0 >/dev/null
+                  fi
                 fi
 
                 PREV_BLUE=$(az containerapp show --name "$APP" --resource-group "$RG" \
@@ -337,15 +354,22 @@ stages:
 
                 NEW_REV="${APP}--${SUFFIX}"
 
-                az containerapp revision label remove \
-                  --name "$APP" --resource-group "$RG" --label green || true
-                az containerapp revision label add \
-                  --name "$APP" --resource-group "$RG" \
-                  --label green --revision "$NEW_REV"
+                if [ "$FIRST_DEPLOY" = true ]; then
+                  az containerapp revision label add \
+                    --name "$APP" --resource-group "$RG" --label blue --revision "$NEW_REV" >/dev/null
+                  az containerapp ingress traffic set \
+                    --name "$APP" --resource-group "$RG" --label-weight blue=100 >/dev/null
+                else
+                  az containerapp revision label remove \
+                    --name "$APP" --resource-group "$RG" --label green || true
+                  az containerapp revision label add \
+                    --name "$APP" --resource-group "$RG" \
+                    --label green --revision "$NEW_REV"
 
-                if [ -n "$PREV_GREEN" ] && [ "$PREV_GREEN" != "$PREV_BLUE" ] && [ "$PREV_GREEN" != "$NEW_REV" ]; then
-                  az containerapp revision deactivate \
-                    --name "$APP" --resource-group "$RG" --revision "$PREV_GREEN"
+                  if [ -n "$PREV_GREEN" ] && [ "$PREV_GREEN" != "$PREV_BLUE" ] && [ "$PREV_GREEN" != "$NEW_REV" ]; then
+                    az containerapp revision deactivate \
+                      --name "$APP" --resource-group "$RG" --revision "$PREV_GREEN"
+                  fi
                 fi
 
 - stage: Promote_prod
